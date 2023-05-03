@@ -11,7 +11,8 @@ DQNAgent.target_update_period = 500 # agent steps
 DQNAgent.epsilon_train = 0.0
 DQNAgent.epsilon_eval = 0.0
 DQNAgent.epsilon_decay_period = 1000 # agent steps
-DQNAgent.tf_device = '/gpu:0'  # '/cpu:*' use for non-GPU version
+DQNAgent.tf_device = '/cpu:*' # '/gpu:0'  # '/cpu:*' use for non-GPU version
+DQNAgent.goir = False # Toggle IR
 
 # This configures the Rainbow agent.
 AGENT_CLASS_2 = @RainbowAgent
@@ -27,13 +28,14 @@ RainbowAgent.tf_device = '/gpu:0'  # '/cpu:*' use for non-GPU version
 WrappedReplayMemory.replay_capacity = 50000 
 
 run_experiment.training_steps = 10000
-run_experiment.num_iterations = 10005
+run_experiment.num_iterations = 500  # 10005
 run_experiment.checkpoint_every_n = 50
 run_one_iteration.evaluate_every_n = 10
 
 # Small Hanabi.
 create_environment.game_type = 'Hanabi-Full-CardKnowledge'
 create_environment.num_players = 2
+create_environment.color_shuffle = True # Toggle OP
 
 create_agent.agent_type = 'Rainbow'
 create_obs_stacker.history_size = 1

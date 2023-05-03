@@ -43,6 +43,19 @@ class CanonicalObservationEncoder : public ObservationEncoder {
   const HanabiGame* parent_game_ = nullptr;
 };
 
+// This is the shuffled observation encoding.
+class ShuffledObservationEncoder : public CanonicalObservationEncoder {
+ public:
+  explicit ShuffledObservationEncoder(const HanabiGame* parent_game)
+      : CanonicalObservationEncoder(parent_game) {}
+
+  std::vector<int> Encode(const HanabiObservation& obs) const override;
+
+  ObservationEncoder::Type type() const override {
+    return ObservationEncoder::Type::kShuffled;
+  }
+};
+
 }  // namespace hanabi_learning_env
 
 #endif

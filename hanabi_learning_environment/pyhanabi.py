@@ -278,9 +278,25 @@ class HanabiCardKnowledge(object):
     """Serialize to dict.
 
     Returns:
-      d: dict, containing color and rank of hint.
+      d: dict, containing color, rank, and plausible information.
     """
-    return {"color": color_idx_to_char(self.color()), "rank": self.rank()}
+    num_colors = 5 # lib.NumColors(self._game) # TODO: Not configurable
+    num_ranks = 5 # lib.NumRanks(self._game)
+
+    color_plausible = [self.color_plausible(c) for c in range(num_colors)]
+    rank_plausible = [self.rank_plausible(r) for r in range(num_ranks)]
+
+    d = {
+        "color": None,
+        "rank": self.rank(),
+        "color_plausible": color_plausible,
+        "rank_plausible": rank_plausible,
+        "color_hinted": self.color() is not None,
+        "rank_hinted": self.rank() is not None
+    }
+    if self.color() is not None:
+      d["color"] = color_idx_to_char(self.color())
+    return d
 
 
 class HanabiMoveType(enum.IntEnum):
@@ -777,6 +793,28 @@ class HanabiGame(object):
   def get_move_uid(self, move):
     """Returns a unique ID describing a legal move, or -1 for invalid move."""
     return lib.GetMoveUid(self._game, move.c_move)
+  
+  def get_move_uid_from_dict(self, move_dict):
+    """Returns a unique ID describing a legal move, given a move dictionary."""
+    move_type = move_dict["action_type"]
+    card_index = move_dict.get("card_index", -1)
+    target_offset = move_dict.get("target_offset", -1)
+    color = move_dict.get("color", -1)
+    if isinstance(color, str):
+      color = color_char_to_idx(color)
+    rank = move_dict.get("rank", -1)
+
+    if move_type == "DISCARD":
+        return card_index
+    elif move_type == "PLAY":
+        return self.hand_size() + card_index
+    elif move_type == "REVEAL_COLOR":
+        return self.hand_size() + self.hand_size() + (target_offset - 1) * self.num_colors() + color
+    elif move_type == "REVEAL_RANK":
+        return self.hand_size() + self.hand_size() + (self.num_players()-1)*self.num_colors() + \
+                (target_offset - 1) * self.num_ranks() + rank
+    else:
+        return -1
 
   def get_move(self, move_uid):
     """Returns a HanabiMove represented by 0 <= move_uid < max_moves()."""
@@ -931,6 +969,7 @@ class HanabiObservation(object):
 class ObservationEncoderType(enum.IntEnum):
   """Encoder types, consistent with observation_encoder.h."""
   CANONICAL = 0
+  SHUFFLED = 1
 
 
 class ObservationEncoder(object):

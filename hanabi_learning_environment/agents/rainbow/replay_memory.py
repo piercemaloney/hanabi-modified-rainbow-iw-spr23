@@ -40,6 +40,13 @@ import gin.tf
 import numpy as np
 import tensorflow as tf
 
+if tf.__version__[0] == '2':
+  from tensorflow.python.ops.data_flow_ops import StagingArea
+  tf = tf.compat.v1
+  stagingarea = StagingArea
+else:
+  stagingarea = tf.contrib.staging.StagingArea
+
 
 # This constant determines how many iterations a checkpoint is kept for.
 CHECKPOINT_DURATION = 4
@@ -537,7 +544,7 @@ class WrappedReplayMemory(object):
           next_legal_actions.set_shape([batch_size, num_actions])
 
           # Create the staging area in CPU.
-          prefetch_area = tf.contrib.staging.StagingArea(
+          prefetch_area = stagingarea(
               [tf.uint8, tf.int32, tf.float32, tf.uint8, tf.uint8, tf.int32,
                tf.float32])
 

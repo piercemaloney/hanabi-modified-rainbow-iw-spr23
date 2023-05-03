@@ -28,6 +28,7 @@ from __future__ import division
 from __future__ import print_function
 
 import time
+import random
 
 from third_party.dopamine import checkpointer
 from third_party.dopamine import iteration_statistics
@@ -37,8 +38,14 @@ from hanabi_learning_environment import rl_env
 import numpy as np
 import rainbow_agent
 import tensorflow as tf
+import inspect
 
 LENIENT_SCORE = False
+
+if tf.__version__[0] == '1':
+  logger = tf.logging
+else:
+  logger = tf.compat.v1.logging
 
 
 class ObservationStacker(object):
@@ -112,7 +119,7 @@ def load_gin_configs(gin_files, gin_bindings):
 
 
 @gin.configurable
-def create_environment(game_type='Hanabi-Full', num_players=2):
+def create_environment(game_type='Hanabi-Full', num_players=2, color_shuffle=False):
   """Creates the Hanabi environment.
 
   Args:
@@ -124,8 +131,9 @@ def create_environment(game_type='Hanabi-Full', num_players=2):
   Returns:
     A Hanabi environment.
   """
-  return rl_env.make(
-      environment_name=game_type, num_players=num_players, pyhanabi_path=None)
+  env = rl_env.make(
+      environment_name=game_type, num_players=num_players, color_shuffle=color_shuffle, pyhanabi_path=None)
+  return env
 
 
 @gin.configurable
@@ -139,10 +147,11 @@ def create_obs_stacker(environment, history_size=4):
   Returns:
     An observation stacker object.
   """
-
-  return ObservationStacker(history_size,
+  obs_stacker = ObservationStacker(history_size,
                             environment.vectorized_observation_shape()[0],
                             environment.players)
+  
+  return obs_stacker
 
 
 @gin.configurable
@@ -220,8 +229,7 @@ def initialize_checkpointing(agent, experiment_logger, checkpoint_dir,
       assert 'current_iteration' in dqn_dictionary
       experiment_logger.data = dqn_dictionary['logs']
       start_iteration = dqn_dictionary['current_iteration'] + 1
-      tf.logging.info('Reloaded checkpoint and will start from iteration %d',
-                      start_iteration)
+      logger.info('Reloaded checkpoint and will start from iteration %d',start_iteration)
 
   return start_iteration, experiment_checkpointer
 
@@ -277,7 +285,7 @@ def parse_observations(observations, num_actions, obs_stacker):
   return current_player, legal_moves, observation_vector
 
 
-def run_one_episode(agent, environment, obs_stacker):
+def run_one_episode(agent, environment, obs_stacker, shuffle_colors=False):
   """Runs the agent on a single game of Hanabi in self-play mode.
 
   Args:
@@ -292,7 +300,7 @@ def run_one_episode(agent, environment, obs_stacker):
   obs_stacker.reset_stack()
   observations = environment.reset()
   current_player, legal_moves, observation_vector = (
-      parse_observations(observations, environment.num_moves(), obs_stacker))
+        parse_observations(observations, environment.num_moves(), obs_stacker))
   action = agent.begin_episode(current_player, legal_moves, observation_vector)
 
   is_done = False
@@ -316,10 +324,10 @@ def run_one_episode(agent, environment, obs_stacker):
     if is_done:
       break
     current_player, legal_moves, observation_vector = (
-        parse_observations(observations, environment.num_moves(), obs_stacker))
+          parse_observations(observations, environment.num_moves(), obs_stacker))
     if current_player in has_played:
       action = agent.step(reward_since_last_action[current_player],
-                          current_player, legal_moves, observation_vector)
+                            current_player, legal_moves, observation_vector, observations)
     else:
       # Each player begins the episode on their first turn (which may not be
       # the first move of the game).
@@ -332,12 +340,12 @@ def run_one_episode(agent, environment, obs_stacker):
 
   agent.end_episode(reward_since_last_action)
 
-  tf.logging.info('EPISODE: %d %g', step_number, total_reward)
+  logger.info('EPISODE: %d %g', step_number, total_reward)
   return step_number, total_reward
 
 
 def run_one_phase(agent, environment, obs_stacker, min_steps, statistics,
-                  run_mode_str):
+                  run_mode_str, shuffle_colors = False):
   """Runs the agent/environment loop until a desired number of steps.
 
   Args:
@@ -359,7 +367,7 @@ def run_one_phase(agent, environment, obs_stacker, min_steps, statistics,
 
   while step_count < min_steps:
     episode_length, episode_return = run_one_episode(agent, environment,
-                                                     obs_stacker)
+                                                     obs_stacker, shuffle_colors)
     statistics.append({
         '{}_episode_lengths'.format(run_mode_str): episode_length,
         '{}_episode_returns'.format(run_mode_str): episode_return
@@ -376,7 +384,8 @@ def run_one_phase(agent, environment, obs_stacker, min_steps, statistics,
 def run_one_iteration(agent, environment, obs_stacker,
                       iteration, training_steps,
                       evaluate_every_n=100,
-                      num_evaluation_games=100):
+                      num_evaluation_games=100,
+                      shuffle_colors=False):
   """Runs one iteration of agent/environment interaction.
 
   An iteration involves running several episodes until a certain number of
@@ -402,13 +411,13 @@ def run_one_iteration(agent, environment, obs_stacker,
   agent.eval_mode = False
   number_steps, sum_returns, num_episodes = (
       run_one_phase(agent, environment, obs_stacker, training_steps, statistics,
-                    'train'))
+                    'train', shuffle_colors))
   time_delta = time.time() - start_time
-  tf.logging.info('Average training steps per second: %.2f',
+  logger.info('Average training steps per second: %.2f',
                   number_steps / time_delta)
 
   average_return = sum_returns / num_episodes
-  tf.logging.info('Average per episode return: %.2f', average_return)
+  logger.info('Average per episode return: %.2f', average_return)
   statistics.append({'average_return': average_return})
 
   # Also run an evaluation phase if desired.
@@ -417,7 +426,7 @@ def run_one_iteration(agent, environment, obs_stacker,
     agent.eval_mode = True
     # Collect episode data for all games.
     for _ in range(num_evaluation_games):
-      episode_data.append(run_one_episode(agent, environment, obs_stacker))
+      episode_data.append(run_one_episode(agent, environment, obs_stacker, shuffle_colors))
 
     eval_episode_length, eval_episode_return = map(np.mean, zip(*episode_data))
 
@@ -425,14 +434,14 @@ def run_one_iteration(agent, environment, obs_stacker,
         'eval_episode_lengths': eval_episode_length,
         'eval_episode_returns': eval_episode_return
     })
-    tf.logging.info('Average eval. episode length: %.2f  Return: %.2f',
+    logger.info('Average eval. episode length: %.2f  Return: %.2f',
                     eval_episode_length, eval_episode_return)
   else:
     statistics.append({
         'eval_episode_lengths': -1,
         'eval_episode_returns': -1
     })
-
+  
   return statistics.data_lists
 
 
@@ -486,9 +495,9 @@ def run_experiment(agent,
                    log_every_n=1,
                    checkpoint_every_n=1):
   """Runs a full experiment, spread over multiple iterations."""
-  tf.logging.info('Beginning training...')
+  logger.info('Beginning training...')
   if num_iterations <= start_iteration:
-    tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
+    logger.warning('num_iterations (%d) < start_iteration(%d)',
                        num_iterations, start_iteration)
     return
 
@@ -496,15 +505,128 @@ def run_experiment(agent,
     start_time = time.time()
     statistics = run_one_iteration(agent, environment, obs_stacker, iteration,
                                    training_steps)
-    tf.logging.info('Iteration %d took %d seconds', iteration,
+    logger.info('Iteration %d took %d seconds', iteration,
                     time.time() - start_time)
     start_time = time.time()
     log_experiment(experiment_logger, iteration, statistics,
                    logging_file_prefix, log_every_n)
-    tf.logging.info('Logging iteration %d took %d seconds', iteration,
+    logger.info('Logging iteration %d took %d seconds', iteration,
                     time.time() - start_time)
     start_time = time.time()
     checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
                           iteration, checkpoint_dir, checkpoint_every_n)
-    tf.logging.info('Checkpointing iteration %d took %d seconds', iteration,
+    logger.info('Checkpointing iteration %d took %d seconds', iteration,
                     time.time() - start_time)
+
+
+
+# -----------------------------------------------------
+# Cross play evaluation
+
+def load_agent_from_checkpoint(checkpoint_dir, agent_type: str, environment, obs_stacker, 
+                                checkpoint_file_prefix='ckpt'):
+    """Loads a Rainbow agent from a given checkpoint.
+
+    Args:
+        checkpoint_dir: str, the directory containing the checkpoints.
+        agent_class: The class of the Rainbow agent.
+        environment: The Hanabi environment.
+        obs_stacker: Observation stacker object.
+        checkpoint_file_prefix: str, the checkpoint file prefix.
+
+    Returns:
+        agent: The Rainbow agent loaded from the checkpoint.
+    """
+
+    # Create a new agent instance
+    agent = create_agent(environment, obs_stacker, agent_type)
+    
+    # Create a Checkpointer object
+    experiment_checkpointer = checkpointer.Checkpointer(
+        checkpoint_dir, checkpoint_file_prefix)
+
+    # Check if checkpoint exists
+    latest_checkpoint_version = checkpointer.get_latest_checkpoint_number(
+        checkpoint_dir)
+    if latest_checkpoint_version >= 0:
+        dqn_dictionary = experiment_checkpointer.load_checkpoint(
+            latest_checkpoint_version)
+        if agent.unbundle(
+            checkpoint_dir, latest_checkpoint_version, dqn_dictionary):
+            logger.info('Loaded agent from checkpoint %d', latest_checkpoint_version)
+        else:
+            raise ValueError(f"Unable to unbundle agent from checkpoint {latest_checkpoint_version}")
+    else:
+        raise FileNotFoundError(f"No valid checkpoint found in {checkpoint_dir}")
+
+    return agent
+
+
+def run_one_cross_play_episode(agent_1, agent_2, environment, obs_stacker):
+  """Runs two agents on a single game of Hanabi in cross-play mode.
+
+  Args:
+    agent_1: First Rainbow agent playing Hanabi.
+    agent_2: Second Rainbow agent playing Hanabi.
+    environment: The Hanabi environment.
+    obs_stacker: Observation stacker object.
+
+  Returns:
+    step_number: int, number of actions in this episode.
+    total_reward: float, undiscounted return for this episode.
+  """
+  obs_stacker.reset_stack()
+  observations = environment.reset()
+  current_player, legal_moves, observation_vector = (
+        parse_observations(observations, environment.num_moves(), obs_stacker))
+  
+  # Select the current agent based on the current player
+  current_agent = agent_1 if current_player == 0 else agent_2
+
+  action = current_agent.begin_episode(current_player, legal_moves, observation_vector)
+
+  is_done = False
+  total_reward = 0
+  step_number = 0
+
+  has_played = {current_player}
+
+  # Keep track of per-player reward.
+  reward_since_last_action = np.zeros(environment.players)
+
+  while not is_done:
+    observations, reward, is_done, _ = environment.step(action.item())
+
+    modified_reward = max(reward, 0) if LENIENT_SCORE else reward
+    total_reward += modified_reward
+
+    reward_since_last_action += modified_reward
+
+    step_number += 1
+    if is_done:
+      break
+    current_player, legal_moves, observation_vector = (
+          parse_observations(observations, environment.num_moves(), obs_stacker))
+    
+    # Update the current agent based on the current player
+    current_agent = agent_1 if current_player == 0 else agent_2
+
+    if current_player in has_played:
+      action = current_agent.step(reward_since_last_action[current_player],
+                            current_player, legal_moves, observation_vector, observations)
+    else:
+      # Each player begins the episode on their first turn (which may not be
+      # the first move of the game).
+      action = current_agent.begin_episode(current_player, legal_moves,
+                                   observation_vector)
+      has_played.add(current_player)
+
+    # Reset this player's reward accumulator.
+    reward_since_last_action[current_player] = 0
+
+  agent_1.end_episode(reward_since_last_action)
+  agent_2.end_episode(reward_since_last_action)
+
+  logger.info('EPISODE: %d %g', step_number, total_reward)
+  return step_number, total_reward
+    

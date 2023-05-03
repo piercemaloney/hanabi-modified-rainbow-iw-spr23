@@ -1,1 +1,4 @@
 *.pyc
+venv-metal/
+_skbuild/
+hanabi_learning_environment.egg-info/

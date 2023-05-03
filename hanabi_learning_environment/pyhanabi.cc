@@ -806,6 +806,10 @@ void NewObservationEncoder(pyhanabi_observation_encoder_t* encoder,
       encoder->encoder = static_cast<hanabi_learning_env::ObservationEncoder*>(
           new hanabi_learning_env::CanonicalObservationEncoder(hanabi_game));
       break;
+    case hanabi_learning_env::ObservationEncoder::Type::kShuffled:
+      encoder->encoder = static_cast<hanabi_learning_env::ObservationEncoder*>(
+          new hanabi_learning_env::ShuffledObservationEncoder(hanabi_game));
+      break;
     default:
       std::cerr << "Encoder type not recognized." << std::endl;
       encoder->encoder = nullptr;

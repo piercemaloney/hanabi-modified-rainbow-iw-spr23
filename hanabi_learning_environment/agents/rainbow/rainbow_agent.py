@@ -32,9 +32,13 @@ import numpy as np
 import prioritized_replay_memory
 import tensorflow as tf
 
-
-slim = tf.contrib.slim
-
+if tf.__version__[0] == '2':
+  import tf_slim as slim  
+  layers = tf.nn
+  tf = tf.compat.v1
+else: ## old version
+  slim = tf.contrib.slim
+  layers = tf.contrib.layers
 
 @gin.configurable
 def rainbow_template(state,
@@ -140,6 +144,7 @@ class RainbowAgent(dqn_agent.DQNAgent):
         tf_device=tf_device)
     tf.logging.info('\t learning_rate: %f', learning_rate)
     tf.logging.info('\t optimizer_epsilon: %f', optimizer_epsilon)
+    tf.logging.info('\t observation_size: %f', observation_size)
 
   def _build_replay_memory(self, use_staging):
     """Creates the replay memory used by the agent.
@@ -165,7 +170,7 @@ class RainbowAgent(dqn_agent.DQNAgent):
     # size of _logits: 1 x num_actions x num_atoms
     self._logits = self._q
     # size of _probabilities: 1 x num_actions x num_atoms
-    self._probabilities = tf.contrib.layers.softmax(self._q)
+    self._probabilities = layers.softmax(self._q)
     # size of _q: 1 x num_actions
     self._q = tf.reduce_sum(self.support * self._probabilities, axis=2)
     # Recompute argmax from q values. Ignore illegal actions.
@@ -196,7 +201,7 @@ class RainbowAgent(dqn_agent.DQNAgent):
 
     target_support = rewards + gamma_with_terminal * tiled_support
     # size of next_probabilities: batch_size  x num_actions x num_atoms
-    next_probabilities = tf.contrib.layers.softmax(
+    next_probabilities = layers.softmax(
         self._replay_next_logits)
 
     # size of next_qt: 1 x num_actions
@@ -204,7 +209,12 @@ class RainbowAgent(dqn_agent.DQNAgent):
     # size of next_qt_argmax: 1 x batch_size
     next_qt_argmax = tf.argmax(
         next_qt + self._replay.next_legal_actions, axis=1)[:, None]
-    batch_indices = tf.range(tf.to_int64(batch_size))[:, None]
+
+    if tf.__version__[0] == '1':
+      batch_indices = tf.range(tf.to_int64(batch_size))[:, None]
+    else:
+      batch_indices = tf.range(tf.cast(batch_size, tf.int64))[:, None]
+  
     # size of next_qt_argmax: batch_size x 2
     next_qt_argmax = tf.concat([batch_indices, next_qt_argmax], axis=1)
     # size of next_probabilities: batch_size x num_atoms
@@ -231,7 +241,11 @@ class RainbowAgent(dqn_agent.DQNAgent):
         labels=target_distribution,
         logits=chosen_action_logits)
 
-    optimizer = tf.train.AdamOptimizer(
+    if tf.__version__[0] == '2':  ##不确定
+      optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate,
+      epsilon=self.optimizer_epsilon)
+    else:
+      optimizer = tf.train.AdamOptimizer(
         learning_rate=self.learning_rate,
         epsilon=self.optimizer_epsilon)
 

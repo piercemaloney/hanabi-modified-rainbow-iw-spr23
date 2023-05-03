@@ -54,7 +54,7 @@ int HandsSectionLength(const HanabiGame& game) {
          game.NumPlayers();
 }
 
-// Enocdes cards in all other player's hands (excluding our unknown hand),
+// Encodes cards in all other player's hands (excluding our unknown hand),
 // and whether the hand is missing a card for all players (when deck is empty.)
 // Each card in a hand is encoded with a one-hot representation using
 // <num_colors> * <num_ranks> bits (25 bits in a standard game) per card.
@@ -449,5 +449,31 @@ std::vector<int> CanonicalObservationEncoder::Encode(
   assert(offset == encoding.size());
   return encoding;
 }
+
+// std::vector<int> ShuffledObservationEncoder::Encode(
+//     const HanabiObservation& obs) const {
+//   std::vector<int> encoding = CanonicalObservationEncoder::Encode(obs);
+
+//   // Modify the encoding here to shuffle the card colors
+//   // using the provided ColorMapper class and agent's color mapping
+//   // Make an empty bit string of the proper size.
+//   std::vector<int> encoding(FlatLength(Shape()), 0);
+
+//   // This offset is an index to the start of each section of the bit vector.
+//   // It is incremented at the end of each section.
+//   int offset = 0;
+//   offset += EncodeHands(*parent_game_, obs, offset, &encoding);
+//   offset += EncodeBoard(*parent_game_, obs, offset, &encoding);
+//   offset += EncodeDiscards(*parent_game_, obs, offset, &encoding);
+//   offset += EncodeLastAction(*parent_game_, obs, offset, &encoding);
+//   if (parent_game_->ObservationType() != HanabiGame::kMinimal) {
+//     offset += EncodeCardKnowledge(*parent_game_, obs, offset, &encoding);
+//   }
+
+//   assert(offset == encoding.size());
+//   return encoding;
+
+//   return encoding;
+// }
 
 }  // namespace hanabi_learning_env

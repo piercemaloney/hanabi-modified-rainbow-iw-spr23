@@ -34,8 +34,32 @@ import numpy as np
 import replay_memory
 import tensorflow as tf
 
+import copy
 
-slim = tf.contrib.slim
+
+# slim = tf.contrib.slim
+
+if tf.__version__[0] == '2':
+    import tf_slim as slim
+    optimizer = tf.optimizers.legacy.RMSprop(
+                   learning_rate=.0025,
+                   decay=0.95,
+                   momentum=0.0,
+                   epsilon=1e-6,
+                   centered=True) 
+    logger = tf.compat.v1.logging
+    tf.compat.v1.disable_eager_execution()
+    tf = tf.compat.v1
+    
+else: ## old version
+    slim = tf.contrib.slim
+    optimizer = tf.train.RMSPropOptimizer(
+                   learning_rate=.0025,
+                   decay=0.95,
+                   momentum=0.0,
+                   epsilon=1e-6,
+                   centered=True)
+    logger = tf.logging
 
 Transition = collections.namedtuple(
     'Transition', ['reward', 'observation', 'legal_actions', 'action', 'begin'])
@@ -107,12 +131,9 @@ class DQNAgent(object):
                graph_template=dqn_template,
                tf_device='/cpu:*',
                use_staging=True,
-               optimizer=tf.train.RMSPropOptimizer(
-                   learning_rate=.0025,
-                   decay=0.95,
-                   momentum=0.0,
-                   epsilon=1e-6,
-                   centered=True)):
+               optimizer=optimizer,
+               goir=False,
+               color_shuffle=False):
     """Initializes the agent and constructs its graph.
 
     Args:
@@ -139,19 +160,19 @@ class DQNAgent(object):
       optimizer: Optimizer instance used for learning.
     """
 
-    tf.logging.info('Creating %s agent with the following parameters:',
+    logger.info('Creating %s agent with the following parameters:',
                     self.__class__.__name__)
-    tf.logging.info('\t gamma: %f', gamma)
-    tf.logging.info('\t update_horizon: %f', update_horizon)
-    tf.logging.info('\t min_replay_history: %d', min_replay_history)
-    tf.logging.info('\t update_period: %d', update_period)
-    tf.logging.info('\t target_update_period: %d', target_update_period)
-    tf.logging.info('\t epsilon_train: %f', epsilon_train)
-    tf.logging.info('\t epsilon_eval: %f', epsilon_eval)
-    tf.logging.info('\t epsilon_decay_period: %d', epsilon_decay_period)
-    tf.logging.info('\t tf_device: %s', tf_device)
-    tf.logging.info('\t use_staging: %s', use_staging)
-    tf.logging.info('\t optimizer: %s', optimizer)
+    logger.info('\t gamma: %f', gamma)
+    logger.info('\t update_horizon: %f', update_horizon)
+    logger.info('\t min_replay_history: %d', min_replay_history)
+    logger.info('\t update_period: %d', update_period)
+    logger.info('\t target_update_period: %d', target_update_period)
+    logger.info('\t epsilon_train: %f', epsilon_train)
+    logger.info('\t epsilon_eval: %f', epsilon_eval)
+    logger.info('\t epsilon_decay_period: %d', epsilon_decay_period)
+    logger.info('\t tf_device: %s', tf_device)
+    logger.info('\t use_staging: %s', use_staging)
+    logger.info('\t optimizer: %s', optimizer)
 
     # Global variables.
     self.num_actions = num_actions
@@ -171,6 +192,8 @@ class DQNAgent(object):
     self.training_steps = 0
     self.batch_staged = False
     self.optimizer = optimizer
+    self.goir = goir
+    self.color_shuffle = color_shuffle
 
     with tf.device(tf_device):
       # Calling online_convnet will generate a new graph as defined in
@@ -263,6 +286,110 @@ class DQNAgent(object):
     loss = tf.losses.huber_loss(
         target, replay_chosen_q, reduction=tf.losses.Reduction.NONE)
     return self.optimizer.minimize(tf.reduce_mean(loss))
+  
+  def _intrinsic_reward(self, obs_dict, action_id):
+    """
+    Args:
+      obs_dict: dict, the current observation returned by the environment, including all agents' observation
+      action_id: int, in the legal_moves_as_int
+    Returns:
+      intrinsic_reward
+      
+    """
+    # Define the reward values for different action categories
+    intrinsic_reward = 0.0
+    set_reward = {'reveal_play': 0.2, 'reveal_cnt': 0.2, 'discard_useless': 0.2,
+                  'discard_useful': -0.2, 'play_wrong': -0.3, 'repeat_reveal': -0.1}
+    player_id = obs_dict['current_player']
+    player_obs = obs_dict['player_observations'][player_id]
+    cur_fireworks = player_obs['fireworks']
+    action_idx = player_obs['legal_moves_as_int'].index(action_id) # not tested
+    action_dict = player_obs['legal_moves'][action_idx]
+    action_type = action_dict['action_type']
+    cur_player_observed_hands = player_obs['observed_hands']
+    card_knowledge = player_obs['card_knowledge'] # 0105
+
+    # Check if the action is of type REVEAL_COLOR or REVEAL_RANK
+    if action_type == 'REVEAL_COLOR' or action_type == 'REVEAL_RANK':
+      target_offset = action_dict['target_offset'] # target_offset is consistent with observed_hands
+      target_hand = cur_player_observed_hands[target_offset]
+      target_knowledge = card_knowledge[target_offset] # 0105
+      # If the action is to reveal a color
+      if action_type == 'REVEAL_COLOR':
+        color = action_dict['color']
+        for card_idx in range(len(target_hand)):
+          # If the target player already knows the color, add the repeat_reveal penalty
+          if target_knowledge[card_idx]['color'] == color:
+            intrinsic_reward += set_reward['repeat_reveal']
+          # If the card is playable and the target player doesn't know the color, add the reveal_play reward
+          elif target_hand[card_idx]['color'] == color and target_hand[card_idx]['rank'] == cur_fireworks[color]: 
+            intrinsic_reward += set_reward['reveal_play']
+      # If the action is to reveal a rank
+      else:
+        rank = action_dict['rank']
+        for card_idx in range(len(target_hand)):
+          # If the target player already knows the rank, add the repeat_reveal penalty
+          if target_knowledge[card_idx]['rank'] == rank:
+            intrinsic_reward += set_reward['repeat_reveal']
+          # If the card is playable and the target player doesn't know the rank, add the reveal_play reward
+          elif target_hand[card_idx]['rank'] == rank and cur_fireworks[target_hand[card_idx]['color']] == rank:
+            intrinsic_reward += set_reward['reveal_play']
+
+      return intrinsic_reward
+
+    # Check if the action is of type DISCARD
+    elif action_type == 'DISCARD':
+      # Get the player's hand
+      if player_id == 0:
+        other_obs_dict = obs_dict['player_observations'][1]
+        player_hand = other_obs_dict['observed_hands'][-1]
+      else:
+        other_obs_dict = obs_dict['player_observations'][0]
+        player_hand = other_obs_dict['observed_hands'][player_id]
+
+      # Get the card to be discarded
+      card = player_hand[action_dict['card_index']]
+      # Check if the card is useful (hasn't been played yet)
+      if cur_fireworks[card['color']] <= card['rank']:
+        # Check if the card rank is 5 (==4 in 0-4 indexing system)
+        if card['rank'] == 4:
+          penalty = set_reward['discard_useful']
+        else:
+          # Calculate the distance between the card rank and the current fireworks rank
+          distance = card['rank'] - cur_fireworks[card['color']]
+
+          # Linear interpolation of the penalty based on the distance
+          penalty_factor = 1 - (distance - 1) / 4.0  # Assuming a maximum distance of 4 (1 to 5)
+
+          # Apply the penalty factor to the base penalty value
+          penalty = set_reward['discard_useful'] * penalty_factor
+
+        # Add the penalty for discarding a useful card
+        intrinsic_reward += penalty
+      else:
+        # Add the reward for discarding a useless card (already played)
+        intrinsic_reward += set_reward['discard_useless']
+
+      return intrinsic_reward
+
+    # Check if the action is of type PLAY
+    elif action_type == 'PLAY':
+      # Get the player's hand
+      if player_id == 0:
+        other_obs_dict = obs_dict['player_observations'][1]
+        player_hand = other_obs_dict['observed_hands'][-1]
+      else:
+        other_obs_dict = obs_dict['player_observations'][0]
+        player_hand = other_obs_dict['observed_hands'][player_id]
+
+      # Get the card to be played
+      card = player_hand[action_dict['card_index']]
+      # Check if the card is not playable (incorrect rank or color)
+      if cur_fireworks[card['color']] != card['rank']:
+        # Add the penalty for playing the wrong card
+        intrinsic_reward += set_reward['play_wrong']
+
+      return intrinsic_reward
 
   def _build_sync_op(self):
     """Build ops for assigning weights from online to target network.
@@ -299,7 +426,7 @@ class DQNAgent(object):
                             self.action, begin=True)
     return self.action
 
-  def step(self, reward, current_player, legal_actions, observation):
+  def step(self, reward, current_player, legal_actions, observation, obs_dict = None, color_permutation=None):
     """Stores observations from last transition and chooses a new action.
 
     Notifies the agent of the outcome of the latest transition and stores it
@@ -310,6 +437,7 @@ class DQNAgent(object):
       current_player: int, the player whose turn it is.
       legal_actions: `np.array`, actions which the player can currently take.
       observation: `np.array`, the most recent observation.
+      obs_dict: dict, the current observation returned by the environment, including all agents' observations
 
     Returns:
       A legal, int-valued action.
@@ -317,7 +445,31 @@ class DQNAgent(object):
     self._train_step()
 
     self.action = self._select_action(observation, legal_actions)
-    self._record_transition(current_player, reward, observation, legal_actions,
+
+    if color_permutation is not None:
+      # Get the action dictionary from the legal_moves list
+      action_dict = obs_dict['player_observations'][current_player]['legal_moves'][legal_actions.index(self.action)]
+      action_type = action_dict['action_type']
+
+      # Map the chosen action's color back to the original representation if it involves a color
+      if action_type in ['REVEAL_COLOR', 'PLAY', 'DISCARD']:
+        card_index = action_dict['card_index']
+        card_color = obs_dict['player_observations'][current_player]['observed_hands'][current_player][card_index]['color']
+        original_color = color_permutation.index(card_color)
+        obs_dict['player_observations'][current_player]['observed_hands'][current_player][card_index]['color'] = original_color
+
+
+    if self.goir:
+      if obs_dict is not None:
+        _reward = copy.deepcopy(reward)
+        _intrinsic_reward = self._intrinsic_reward(obs_dict, self.action)
+        _reward += _intrinsic_reward
+        self._record_transition(current_player, _reward, observation, legal_actions,
+                              self.action)
+      else:
+        print("no obs_dict")
+    else:
+      self._record_transition(current_player, reward, observation, legal_actions,
                             self.action)
     return self.action
 
@@ -382,7 +534,7 @@ class DQNAgent(object):
       # buffer.
       self.transitions[player] = []
 
-  def _select_action(self, observation, legal_actions):
+  def _select_action(self, observation, legal_actions, observation_dict = None):
     """Select an action from the set of allowed actions.
 
     Chooses an action randomly with probability self._calculate_epsilon(), and
@@ -407,7 +559,6 @@ class DQNAgent(object):
       legal_action_indices = np.where(legal_actions == 0.0)
       return np.random.choice(legal_action_indices[0])
     else:
-      # Convert observation into a batch-based format.
       self.state[0, :, 0] = observation
 
       # Choose the action maximizing the q function for the current state.
